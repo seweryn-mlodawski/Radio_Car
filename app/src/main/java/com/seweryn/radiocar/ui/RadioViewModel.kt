@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
 
 class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = StationRepository(application)
+    private val repository = StationRepository.getInstance(application)
     val stations: StateFlow<List<Station>> = repository.stations
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -54,16 +54,20 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
 
+    private val btTracker = com.seweryn.radiocar.util.BluetoothDeviceTracker(application)
+    val connectedDeviceName: StateFlow<String?> = btTracker.connectedDeviceName
+
     init {
+        btTracker.start()
         initMediaController()
+    }
+
+    fun refreshBluetoothDevice() {
+        btTracker.updateConnectedDevice()
     }
 
     private fun initMediaController() {
         val context = getApplication<Application>()
-        // Start foreground service first
-        val serviceIntent = Intent(context, RadioPlayerService::class.java)
-        ContextCompat.startForegroundService(context, serviceIntent)
-
         val sessionToken = SessionToken(
             context,
             ComponentName(context, RadioPlayerService::class.java)
@@ -93,6 +97,10 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 updateMetadata(mediaMetadata)
             }
 
+            override fun onPlaylistMetadataChanged(mediaMetadata: MediaMetadata) {
+                updateMetadata(mediaMetadata)
+            }
+
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 val mediaId = mediaItem?.mediaId?.toIntOrNull()
                 if (mediaId != null) {
@@ -113,14 +121,55 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             ?: stations.value.firstOrNull { !it.isEmpty }
         _currentStation.value = station
 
+        controller.playlistMetadata.let { updateMetadata(it) }
         controller.mediaMetadata.let { updateMetadata(it) }
     }
 
     private fun updateMetadata(mediaMetadata: MediaMetadata) {
-        val title = mediaMetadata.title?.toString() ?: ""
-        val artist = mediaMetadata.artist?.toString() ?: ""
-        _songTitle.value = title
-        _artistName.value = artist
+        val rawTitle = mediaMetadata.title?.toString()?.trim() ?: ""
+        val displayTitle = mediaMetadata.displayTitle?.toString()?.trim() ?: ""
+        val subtitle = mediaMetadata.subtitle?.toString()?.trim() ?: ""
+        val artist = mediaMetadata.artist?.toString()?.trim() ?: ""
+        val album = mediaMetadata.albumTitle?.toString()?.trim() ?: ""
+
+        var parsedArtist = if (subtitle.isNotBlank() && !subtitle.equals("Live", ignoreCase = true)) subtitle else artist
+        var parsedSongTitle = if (displayTitle.isNotBlank() && !displayTitle.equals(album, ignoreCase = true)) displayTitle else rawTitle
+
+        // If parsedSongTitle still contains " - " or " – ", separate artist and song title
+        if (parsedSongTitle.contains(" - ")) {
+            val parts = parsedSongTitle.split(" - ", limit = 2)
+            if (parsedArtist.isBlank() || parsedArtist.equals("Sewer Mobile Radio", ignoreCase = true)) {
+                parsedArtist = parts[0].trim()
+            }
+            parsedSongTitle = parts[1].trim()
+        } else if (parsedSongTitle.contains(" – ")) {
+            val parts = parsedSongTitle.split(" – ", limit = 2)
+            if (parsedArtist.isBlank() || parsedArtist.equals("Sewer Mobile Radio", ignoreCase = true)) {
+                parsedArtist = parts[0].trim()
+            }
+            parsedSongTitle = parts[1].trim()
+        }
+
+        // Filter out "Live" or station name from songTitle
+        if (parsedSongTitle.isBlank() ||
+            parsedSongTitle.equals("Live", ignoreCase = true) ||
+            parsedSongTitle.equals(album, ignoreCase = true)
+        ) {
+            _songTitle.value = ""
+        } else {
+            _songTitle.value = parsedSongTitle
+        }
+
+        // Filter out app name or station name from artistName
+        if (parsedArtist.isBlank() ||
+            parsedArtist.equals("Sewer Mobile Radio", ignoreCase = true) ||
+            parsedArtist.equals(album, ignoreCase = true) ||
+            parsedArtist.equals("Radio Car", ignoreCase = true)
+        ) {
+            _artistName.value = ""
+        } else {
+            _artistName.value = parsedArtist
+        }
     }
 
     fun playStation(station: Station) {
@@ -133,8 +182,15 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         val intent = Intent(context, RadioPlayerService::class.java).apply {
             action = RadioPlayerService.ACTION_PLAY_STATION
             putExtra(RadioPlayerService.EXTRA_STATION_ID, station.id)
+            putExtra(RadioPlayerService.EXTRA_STATION_NAME, station.name)
+            putExtra(RadioPlayerService.EXTRA_STATION_URL, station.streamUrl)
+            putExtra(RadioPlayerService.EXTRA_STATION_LOGO, station.logoUrl)
         }
-        ContextCompat.startForegroundService(context, intent)
+        try {
+            context.startService(intent)
+        } catch (_: Exception) {
+            ContextCompat.startForegroundService(context, intent)
+        }
     }
 
     fun togglePlayPause() {
@@ -264,8 +320,17 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         closeEditDialog()
     }
 
+    fun resetToDefaults() {
+        val defaults = repository.resetToDefaults()
+        val firstStation = defaults.firstOrNull { !it.isEmpty }
+        if (firstStation != null) {
+            playStation(firstStation)
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        btTracker.stop()
         mediaController?.release()
         mediaController = null
     }

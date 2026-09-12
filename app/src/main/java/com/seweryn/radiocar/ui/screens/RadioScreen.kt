@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -23,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
@@ -32,6 +34,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import com.seweryn.radiocar.ui.RadioViewModel
 import com.seweryn.radiocar.ui.components.EditStationDialog
 import com.seweryn.radiocar.ui.components.GlassmorphicCard
+import com.seweryn.radiocar.ui.components.ResetDefaultsConfirmationDialog
 import com.seweryn.radiocar.ui.components.StationSlotsCarousel
 import com.seweryn.radiocar.ui.components.VinylCover
 import com.seweryn.radiocar.ui.theme.AccentRed
@@ -71,6 +77,9 @@ fun RadioScreen(
     val editingStation by viewModel.editingStation.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
+    val connectedDevice by viewModel.connectedDeviceName.collectAsState()
+
+    var showResetDialog by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -83,88 +92,121 @@ fun RadioScreen(
                 )
             )
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
-                .padding(vertical = 16.dp),
+                .padding(vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Header: App Title and Live Status
+            // Header: App Title or Connected Bluetooth Audio Device
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+                    .padding(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f, fill = false)) {
+                    val headerTitle = connectedDevice?.ifBlank { null } ?: "SEWER MOBILE RADIO"
+                    val headerSubtitle = if (connectedDevice != null) "Połączono z audio Bluetooth" else "Auto Connect & MediaSession"
+
                     Text(
-                        text = "RADIO CAR",
+                        text = headerTitle,
                         color = TextPrimary,
-                        fontSize = 20.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 2.sp
+                        letterSpacing = 0.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Auto Connect & MediaSession",
+                        text = headerSubtitle,
                         color = TextSecondary,
-                        fontSize = 11.sp
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                // Live status chip
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(GlassSurface)
-                        .border(1.dp, GlassBorder.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                Spacer(modifier = Modifier.size(8.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    // Reset to defaults button (same as Brave extension)
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(GlassSurface)
+                            .border(1.dp, GlassBorder.copy(alpha = 0.3f), CircleShape)
+                            .clickable { showResetDialog = true },
+                        contentAlignment = Alignment.Center
                     ) {
-                        if (isBuffering) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(10.dp),
-                                color = AccentRed,
-                                strokeWidth = 2.dp
-                            )
-                            Text(
-                                text = "ŁĄCZENIE...",
-                                color = AccentRed,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        } else if (isPlaying) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF2EA043))
-                            )
-                            Text(
-                                text = "NA ŻYWO",
-                                color = Color(0xFF2EA043),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(TextSecondary)
-                            )
-                            Text(
-                                text = "ZATRZYMANO",
-                                color = TextSecondary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Przywróć sprawdzone stacje fabryczne",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    // Live status chip
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(GlassSurface)
+                            .border(1.dp, GlassBorder.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (isBuffering) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(10.dp),
+                                    color = AccentRed,
+                                    strokeWidth = 2.dp
+                                )
+                                Text(
+                                    text = "ŁĄCZENIE...",
+                                    color = AccentRed,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else if (isPlaying) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF2EA043))
+                                )
+                                Text(
+                                    text = "NA ŻYWO",
+                                    color = Color(0xFF2EA043),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(TextSecondary)
+                                )
+                                Text(
+                                    text = "ZATRZYMANO",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
@@ -219,9 +261,9 @@ fun RadioScreen(
 
                     val displaySong = when {
                         songTitle.isNotBlank() -> songTitle
-                        isBuffering -> "Buforowanie strumienia audio..."
-                        isPlaying -> "Odbiór na żywo"
-                        else -> "Gotowy do odtwarzania"
+                        isBuffering -> "Łączenie..."
+                        isPlaying -> "Live"
+                        else -> "Gotowy"
                     }
 
                     Text(
@@ -234,7 +276,7 @@ fun RadioScreen(
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    if (artistName.isNotBlank()) {
+                    if (artistName.isNotBlank() && !artistName.equals(currentStation?.name, ignoreCase = true)) {
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = artistName,
@@ -335,11 +377,32 @@ fun RadioScreen(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
                     )
-                    Text(
-                        text = "Przytrzymaj aby edytować",
-                        color = TextSecondary.copy(alpha = 0.5f),
-                        fontSize = 10.sp
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Przytrzymaj aby edytować",
+                            color = TextSecondary.copy(alpha = 0.5f),
+                            fontSize = 10.sp
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(GlassSurface)
+                                .border(0.5.dp, GlassBorder.copy(alpha = 0.3f), CircleShape)
+                                .clickable { showResetDialog = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Przywróć stacje fabryczne",
+                                tint = TextSecondary.copy(alpha = 0.8f),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
                 }
 
                 StationSlotsCarousel(
@@ -349,6 +412,8 @@ fun RadioScreen(
                     onSelectStation = { viewModel.playStation(it) },
                     onEditStation = { viewModel.openEditDialog(it) }
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
             }
         }
 
@@ -366,6 +431,14 @@ fun RadioScreen(
                     viewModel.saveOrSwapStation(sourceId, targetId, name, streamUrl, logoUrl, icon)
                 },
                 onClear = { stationId -> viewModel.clearStation(stationId) }
+            )
+        }
+
+        // Reset Defaults Confirmation Dialog
+        if (showResetDialog) {
+            ResetDefaultsConfirmationDialog(
+                onDismiss = { showResetDialog = false },
+                onConfirm = { viewModel.resetToDefaults() }
             )
         }
     }

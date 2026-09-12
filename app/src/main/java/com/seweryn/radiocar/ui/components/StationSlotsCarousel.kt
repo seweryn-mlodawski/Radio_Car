@@ -20,10 +20,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -146,26 +142,11 @@ fun StationSlotsCarousel(
                     )
                 }
 
-                // Edit Icon (Top Right)
-                IconButton(
-                    onClick = { onEditStation(station) },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .size(24.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Edytuj stację",
-                        tint = TextSecondary.copy(alpha = 0.6f),
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-
                 // Center Icon / Logo & Name
                 Column(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .padding(top = 10.dp),
+                        .padding(top = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {

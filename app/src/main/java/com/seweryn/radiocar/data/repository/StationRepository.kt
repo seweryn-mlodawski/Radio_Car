@@ -11,17 +11,25 @@ import kotlinx.serialization.json.Json
 
 class StationRepository(context: Context) {
 
-    private val prefs: SharedPreferences = context.getSharedPreferences("radio_car_prefs", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs: SharedPreferences = appContext.getSharedPreferences("radio_car_prefs", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
 
     private val _stations = MutableStateFlow<List<Station>>(emptyList())
     val stations: StateFlow<List<Station>> = _stations.asStateFlow()
 
-    init {
-        loadStations()
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == KEY_STATIONS) {
+            loadStations()
+        }
     }
 
-    private fun loadStations() {
+    init {
+        loadStations()
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+    }
+
+    fun loadStations() {
         val savedJson = prefs.getString(KEY_STATIONS, null)
         if (savedJson != null) {
             try {
@@ -90,7 +98,13 @@ class StationRepository(context: Context) {
     }
 
     fun getStationById(id: Int): Station? {
-        return _stations.value.find { it.id == id }
+        val found = _stations.value.find { it.id == id }
+        if (found == null || found.streamUrl.isBlank()) {
+            // Fresh reload from SharedPreferences if not found or empty
+            loadStations()
+            return _stations.value.find { it.id == id }
+        }
+        return found
     }
 
     fun getLastStationId(): Int {
@@ -99,6 +113,14 @@ class StationRepository(context: Context) {
 
     fun saveLastStationId(id: Int) {
         prefs.edit().putInt(KEY_LAST_STATION_ID, id).apply()
+    }
+
+    fun resetToDefaults(): List<Station> {
+        val defaults = defaultStations()
+        _stations.value = defaults
+        saveStations(defaults)
+        saveLastStationId(1)
+        return defaults
     }
 
     private fun saveStations(list: List<Station>) {
@@ -112,11 +134,20 @@ class StationRepository(context: Context) {
         private const val KEY_STATIONS = "saved_stations"
         private const val KEY_LAST_STATION_ID = "last_station_id"
 
+        @Volatile
+        private var INSTANCE: StationRepository? = null
+
+        fun getInstance(context: Context): StationRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: StationRepository(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+
         fun defaultStations(): List<Station> = listOf(
             Station(
                 id = 1,
                 name = "Antyradio",
-                streamUrl = "https://n-4-2.dcs.redcdn.pl/sc/o2/Eurozet/live/antyradio.livx?audio=5",
+                streamUrl = "https://an02.cdn.eurozet.pl/ant-web.mp3",
                 logoUrl = "https://gfx.antyradio.pl/design/antyradio/src/images/favicon/favicon_180x180.png",
                 icon = "📻"
             ),
@@ -125,63 +156,63 @@ class StationRepository(context: Context) {
                 name = "Antyradio Classic Rock",
                 streamUrl = "https://an01.cdn.eurozet.pl/ANTCLA.mp3?redirected=01",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/apple-touch-icon.png",
-                icon = "📻"
+                icon = "🎸"
             ),
             Station(
                 id = 3,
                 name = "Antyradio Greatest",
                 streamUrl = "https://an02.cdn.eurozet.pl/ANTGRE.mp3",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/favicon-32x32.png",
-                icon = "📻"
+                icon = "⚡"
             ),
             Station(
                 id = 4,
-                name = "Radio 357",
-                streamUrl = "https://n-11-21.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx?preroll=0",
-                logoUrl = "https://radio357.pl/wp-content/uploads/2022/04/c5399c0d-1b8e-43d5-b23b-e5cef1857856.png",
+                name = "Antyradio Unplugged",
+                streamUrl = "https://an05.cdn.eurozet.pl/ANTUNP.mp3",
+                logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/apple-touch-icon.png",
                 icon = "📻"
             ),
             Station(
                 id = 5,
                 name = "RMF Rock",
                 streamUrl = "http://217.74.72.11/rmf_rock",
-                logoUrl = "http://www.rmfon.pl/assets/images/favicon/apple-touch-icon.png",
+                logoUrl = "https://www.rmfon.pl/favicon.ico",
                 icon = "🎸"
             ),
             Station(
                 id = 6,
                 name = "RMF Rock + FAKTY",
                 streamUrl = "http://195.150.20.7/ROCKF",
-                logoUrl = "http://www.rmfon.pl/assets/images/favicon/apple-touch-icon.png",
-                icon = "📻"
+                logoUrl = "https://www.rmfon.pl/favicon.ico",
+                icon = "📰"
             ),
             Station(
                 id = 7,
-                name = "Polskie Radio Czwórka",
-                streamUrl = "https://stream14.polskieradio.pl/pr4/pr4.sdp/playlist.m3u8",
-                logoUrl = "https://upload.wikimedia.org/wikipedia/commons/7/79/Czwórka_Polskie_Radio.jpg",
+                name = "Radio 357",
+                streamUrl = "https://stream.rcs.revma.com/ye5kghkgcm0uv",
+                logoUrl = "https://radio357.pl/wp-content/uploads/2022/04/c5399c0d-1b8e-43d5-b23b-e5cef1857856.png",
                 icon = "📻"
             ),
             Station(
                 id = 8,
-                name = "Puste gniazdo 8",
-                streamUrl = "",
+                name = "Hard Rock Radio FM",
+                streamUrl = "http://67.249.184.45:8015/",
                 logoUrl = "",
-                icon = "➕"
+                icon = "🎸"
             ),
             Station(
                 id = 9,
-                name = "Puste gniazdo 9",
-                streamUrl = "",
-                logoUrl = "",
-                icon = "➕"
+                name = "Radio ZET",
+                streamUrl = "https://an06.cdn.eurozet.pl/zet-net.mp3",
+                logoUrl = "https://www.radiozet.pl/favicon.ico",
+                icon = "🔴"
             ),
             Station(
                 id = 10,
-                name = "Puste gniazdo 10",
-                streamUrl = "",
-                logoUrl = "",
-                icon = "➕"
+                name = "RMF Polska Alternatywa",
+                streamUrl = "http://195.150.20.7/POLSKAALTERNATYWA",
+                logoUrl = "https://www.rmf.fm/assets/images/favicon/apple-icon-120x120.png?3",
+                icon = "📻"
             )
         )
     }

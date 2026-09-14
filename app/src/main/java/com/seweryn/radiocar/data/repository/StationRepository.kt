@@ -35,7 +35,13 @@ class StationRepository(context: Context) {
             try {
                 val list = json.decodeFromString<List<Station>>(savedJson)
                 if (list.isNotEmpty()) {
-                    _stations.value = list
+                    val migratedList = list.map { station ->
+                        migrateStationUrl(station)
+                    }
+                    _stations.value = migratedList
+                    if (migratedList != list) {
+                        saveStations(migratedList)
+                    }
                     return
                 }
             } catch (_: Exception) {
@@ -44,6 +50,24 @@ class StationRepository(context: Context) {
         }
         _stations.value = defaultStations()
         saveStations(_stations.value)
+    }
+
+    private fun migrateStationUrl(station: Station): Station {
+        val url = station.streamUrl
+        if (url.contains("cdn.eurozet.pl")) {
+            val updatedUrl = url
+                .replace("an01.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an03.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an04.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an05.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an06.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("?redirected=01", "")
+            if (updatedUrl != url) {
+                return station.copy(streamUrl = updatedUrl)
+            }
+        }
+        return station
     }
 
     fun updateStation(updatedStation: Station) {
@@ -154,7 +178,7 @@ class StationRepository(context: Context) {
             Station(
                 id = 2,
                 name = "Antyradio Classic Rock",
-                streamUrl = "https://an01.cdn.eurozet.pl/ANTCLA.mp3?redirected=01",
+                streamUrl = "https://an02.cdn.eurozet.pl/ANTCLA.mp3",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/apple-touch-icon.png",
                 icon = "🎸"
             ),
@@ -168,7 +192,7 @@ class StationRepository(context: Context) {
             Station(
                 id = 4,
                 name = "Antyradio Unplugged",
-                streamUrl = "https://an05.cdn.eurozet.pl/ANTUNP.mp3",
+                streamUrl = "https://an02.cdn.eurozet.pl/ANTUNP.mp3",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/apple-touch-icon.png",
                 icon = "📻"
             ),
@@ -203,7 +227,7 @@ class StationRepository(context: Context) {
             Station(
                 id = 9,
                 name = "Radio ZET",
-                streamUrl = "https://an06.cdn.eurozet.pl/zet-net.mp3",
+                streamUrl = "https://an02.cdn.eurozet.pl/zet-net.mp3",
                 logoUrl = "https://www.radiozet.pl/favicon.ico",
                 icon = "🔴"
             ),

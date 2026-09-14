@@ -111,7 +111,7 @@ fun RadioScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f, fill = false)) {
-                    val headerTitle = connectedDevice?.ifBlank { null } ?: "SEWER MOBILE RADIO"
+                    val headerTitle = connectedDevice?.ifBlank { null } ?: "SEWER'S MOBILE RADIO"
                     val headerSubtitle = if (connectedDevice != null) "Połączono z audio Bluetooth" else "Auto Connect & MediaSession"
 
                     Text(

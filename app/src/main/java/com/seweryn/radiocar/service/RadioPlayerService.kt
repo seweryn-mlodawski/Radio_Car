@@ -28,18 +28,36 @@ import androidx.media3.session.MediaSessionService
 import com.seweryn.radiocar.MainActivity
 import com.seweryn.radiocar.data.model.Station
 import com.seweryn.radiocar.data.repository.StationRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArraySet
 
 @UnstableApi
 class RadioPlayerService : MediaSessionService() {
 
     private lateinit var player: ExoPlayer
-    private lateinit var forwardingPlayer: ForwardingPlayer
+    private lateinit var forwardingPlayer: CustomForwardingPlayer
     private var mediaSession: MediaSession? = null
     private lateinit var repository: StationRepository
     private var currentStation: Station? = null
 
     private var currentSongTitle: String = ""
     private var currentArtist: String = ""
+    private var currentArtworkUrl: String? = null
+
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var rdsJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -70,49 +88,7 @@ class RadioPlayerService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
-        // Wrap ExoPlayer in ForwardingPlayer to expose SEEK_TO_NEXT/PREVIOUS to Bluetooth AVRCP
-        forwardingPlayer = object : ForwardingPlayer(player) {
-            override fun isCommandAvailable(command: @Player.Command Int): Boolean {
-                return when (command) {
-                    Player.COMMAND_SEEK_TO_NEXT,
-                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                    Player.COMMAND_SEEK_TO_PREVIOUS,
-                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                    Player.COMMAND_PLAY_PAUSE,
-                    Player.COMMAND_STOP -> true
-                    else -> super.isCommandAvailable(command)
-                }
-            }
-
-            override fun getAvailableCommands(): Player.Commands {
-                return super.getAvailableCommands().buildUpon()
-                    .add(Player.COMMAND_SEEK_TO_NEXT)
-                    .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                    .add(Player.COMMAND_SEEK_TO_PREVIOUS)
-                    .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-                    .build()
-            }
-
-            override fun seekToNext() {
-                playNextStation()
-            }
-
-            override fun seekToNextMediaItem() {
-                playNextStation()
-            }
-
-            override fun seekToPrevious() {
-                playPrevStation()
-            }
-
-            override fun seekToPreviousMediaItem() {
-                playPrevStation()
-            }
-
-            override fun getMediaMetadata(): MediaMetadata {
-                return buildSessionMetadata()
-            }
-        }
+        forwardingPlayer = CustomForwardingPlayer(player)
 
         player.addListener(object : Player.Listener {
             override fun onMetadata(metadata: androidx.media3.common.Metadata) {
@@ -162,11 +138,11 @@ class RadioPlayerService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureForeground(currentStation?.name ?: "Sewer Mobile Radio")
+        ensureForeground(currentStation?.name ?: "Sewer's Mobile Radio")
         val action = intent?.action
         if (action == ACTION_PLAY_STATION) {
             val stationId = intent.getIntExtra(EXTRA_STATION_ID, -1)
-            val stationName = intent.getStringExtra(EXTRA_STATION_NAME) ?: "Sewer Mobile Radio"
+            val stationName = intent.getStringExtra(EXTRA_STATION_NAME) ?: "Sewer's Mobile Radio"
             val stationUrl = intent.getStringExtra(EXTRA_STATION_URL)
             val stationLogo = intent.getStringExtra(EXTRA_STATION_LOGO)
 
@@ -193,7 +169,7 @@ class RadioPlayerService : MediaSessionService() {
     private fun ensureForeground(stationName: String) {
         try {
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(stationName.ifBlank { "Sewer Mobile Radio" })
+                .setContentTitle(stationName.ifBlank { "Sewer's Mobile Radio" })
                 .setContentText("Odtwarzanie stacji...")
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .setOngoing(true)
@@ -219,22 +195,34 @@ class RadioPlayerService : MediaSessionService() {
         currentStation = station
         currentSongTitle = ""
         currentArtist = ""
+        currentArtworkUrl = null
         repository.saveLastStationId(station.id)
+
+        // Cancel previous RDS polling job if any
+        rdsJob?.cancel()
 
         try {
             val initialMetadata = buildSessionMetadata()
+            val effectiveUrl = resolveStreamUrl(station.streamUrl)
 
             val mediaItem = MediaItem.Builder()
                 .setMediaId(station.id.toString())
-                .setUri(station.streamUrl)
+                .setUri(effectiveUrl)
                 .setMediaMetadata(initialMetadata)
                 .build()
 
             player.setMediaItem(mediaItem)
             player.playlistMetadata = initialMetadata
+            forwardingPlayer.dispatchMetadataChanged()
             player.prepare()
             if (autoPlay) {
                 player.play()
+            }
+
+            // Start RDS fetching if station has an RDS endpoint (e.g. Antyradio, Radio ZET)
+            val rdsUrl = getRdsUrlForStation(station)
+            if (rdsUrl != null) {
+                startRdsPolling(station, rdsUrl)
             }
         } catch (e: Exception) {
             Log.e("RadioPlayerService", "Error playing station ${station.name}", e)
@@ -252,13 +240,13 @@ class RadioPlayerService : MediaSessionService() {
 
     /**
      * Builds standard MediaMetadata formatted for Car displays (BMW iDrive AVRCP) and the phone UI.
-     * - Artist (👤 Wykonawca): "Sewer Mobile Radio"
+     * - Artist (👤 Wykonawca): "Sewer's Mobile Radio"
      * - AlbumTitle (💿 Płyta): Station name (e.g. "Antyradio Classic Rock")
      * - Title (🎵 Utwór): Song title or "Live"
      */
     private fun buildSessionMetadata(): MediaMetadata {
         val station = currentStation
-        val stationName = station?.name ?: "Sewer Mobile Radio"
+        val stationName = station?.name ?: "Sewer's Mobile Radio"
         val song = currentSongTitle.trim()
         val artist = currentArtist.trim()
 
@@ -268,13 +256,19 @@ class RadioPlayerService : MediaSessionService() {
             else -> "Live"
         }
 
+        val artworkUri = when {
+            !currentArtworkUrl.isNullOrBlank() -> Uri.parse(currentArtworkUrl)
+            station != null && station.logoUrl.isNotBlank() -> Uri.parse(station.logoUrl)
+            else -> null
+        }
+
         return MediaMetadata.Builder()
-            .setArtist("Sewer Mobile Radio") // 👤 Ikona człowieczka w BMW
-            .setAlbumTitle(stationName)      // 💿 Ikona płyty w BMW
-            .setTitle(titleForCar)           // 🎵 Ikona nutek w BMW
+            .setArtist("Sewer's Mobile Radio") // 👤 Ikona człowieczka w BMW
+            .setAlbumTitle(stationName)        // 💿 Ikona płyty w BMW
+            .setTitle(titleForCar)             // 🎵 Ikona nutek w BMW
             .setDisplayTitle(if (song.isNotBlank()) song else stationName)
             .setSubtitle(if (artist.isNotBlank()) artist else "Live")
-            .setArtworkUri(if (station != null && station.logoUrl.isNotBlank()) Uri.parse(station.logoUrl) else null)
+            .setArtworkUri(artworkUri)
             .build()
     }
 
@@ -291,6 +285,7 @@ class RadioPlayerService : MediaSessionService() {
         if (cleaned.isBlank() ||
             cleaned.equals(station.name, ignoreCase = true) ||
             cleaned.equals("Antyradio", ignoreCase = true) ||
+            cleaned.equals("Radio ZET", ignoreCase = true) ||
             cleaned.equals("Live", ignoreCase = true)
         ) {
             currentSongTitle = ""
@@ -310,8 +305,127 @@ class RadioPlayerService : MediaSessionService() {
             }
         }
 
-        val updatedMeta = buildSessionMetadata()
-        player.playlistMetadata = updatedMeta
+        forwardingPlayer.dispatchMetadataChanged()
+    }
+
+    private fun resolveStreamUrl(rawUrl: String): String {
+        if (rawUrl.contains("cdn.eurozet.pl")) {
+            return rawUrl
+                .replace("an01.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an03.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an04.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an05.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an06.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("an.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
+                .replace("?redirected=01", "")
+        }
+        return rawUrl
+    }
+
+    private fun getRdsUrlForStation(station: Station): String? {
+        val name = station.name.trim()
+        val url = station.streamUrl.lowercase()
+
+        // Main Antyradio (FM / Web stream)
+        if (url.contains("ant-web.mp3") || url.contains("ant-kat.mp3") ||
+            (name.equals("Antyradio", ignoreCase = true) && !url.contains("antcla") && !url.contains("antgre") && !url.contains("antunp"))
+        ) {
+            return "https://rds.eurozet.pl/reader/var/antyradio.json"
+        }
+
+        // Radio ZET
+        if (url.contains("zet-net.mp3") || name.equals("Radio ZET", ignoreCase = true)) {
+            return "https://rds.eurozet.pl/reader/var/radiozet.json"
+        }
+
+        // Chillizet / Meloradio
+        if (url.contains("chilli") || name.contains("Chillizet", ignoreCase = true)) {
+            return "https://rds.eurozet.pl/reader/var/zetchilli.json"
+        }
+        if (url.contains("melo") || name.contains("Meloradio", ignoreCase = true)) {
+            return "https://rds.eurozet.pl/reader/var/zetgold.json"
+        }
+
+        return null
+    }
+
+    private fun startRdsPolling(station: Station, rdsUrl: String) {
+        rdsJob?.cancel()
+        rdsJob = serviceScope.launch {
+            // Immediate fetch upon station tune-in
+            fetchRdsMetadata(station, rdsUrl)
+            while (isActive) {
+                delay(15_000)
+                fetchRdsMetadata(station, rdsUrl)
+            }
+        }
+    }
+
+    private suspend fun fetchRdsMetadata(station: Station, rdsUrl: String) = withContext(Dispatchers.IO) {
+        try {
+            val conn = (URL(rdsUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 5000
+                readTimeout = 5000
+                setRequestProperty("User-Agent", "RadioCar/1.0 (Linux; Android)")
+            }
+            if (conn.responseCode == 200) {
+                val raw = conn.inputStream.bufferedReader().use { it.readText() }
+                val firstBrace = raw.indexOf('{')
+                val lastBrace = raw.lastIndexOf('}')
+                if (firstBrace != -1 && lastBrace > firstBrace) {
+                    val jsonStr = raw.substring(firstBrace, lastBrace + 1)
+                    val root = JSONObject(jsonStr)
+                    val now = root.optJSONObject("now")
+                    val artist = now?.optString("artist")?.trim()
+                        ?.trimStart('?', '\uFEFF', ' ', '-', '–', '\u0000')?.trim() ?: ""
+                    val title = now?.optString("title")?.trim()
+                        ?.trimStart('?', '\uFEFF', ' ', '-', '–', '\u0000')?.trim() ?: ""
+                    val img = now?.optString("img")?.trim() ?: ""
+
+                    withContext(Dispatchers.Main) {
+                        if (currentStation?.id == station.id) {
+                            applyRdsMetadata(artist, title, img)
+                        }
+                    }
+                }
+            }
+            conn.disconnect()
+        } catch (e: Exception) {
+            Log.w("RadioPlayerService", "Error fetching RDS for ${station.name}: ${e.message}")
+        }
+    }
+
+    private fun applyRdsMetadata(artist: String, title: String, img: String) {
+        val station = currentStation ?: return
+
+        // If title equals station name or generic live, reset
+        val isLiveOrBlank = title.isBlank() ||
+                title.equals(station.name, ignoreCase = true) ||
+                title.equals("Antyradio", ignoreCase = true) ||
+                title.equals("Radio ZET", ignoreCase = true) ||
+                title.equals("Live", ignoreCase = true)
+
+        if (isLiveOrBlank) {
+            if (currentSongTitle.isNotBlank() || currentArtist.isNotBlank()) {
+                currentSongTitle = ""
+                currentArtist = ""
+                currentArtworkUrl = null
+                forwardingPlayer.dispatchMetadataChanged()
+            }
+            return
+        }
+
+        if (artist == currentArtist && title == currentSongTitle) {
+            return
+        }
+
+        currentArtist = artist
+        currentSongTitle = title
+        if (img.isNotBlank() && img.startsWith("http")) {
+            currentArtworkUrl = img
+        }
+
+        forwardingPlayer.dispatchMetadataChanged()
     }
 
     private fun playNextStation() {
@@ -328,6 +442,130 @@ class RadioPlayerService : MediaSessionService() {
         val currentIndex = list.indexOfFirst { it.id == currentStation?.id }
         val prevIndex = if (currentIndex > 0) currentIndex - 1 else list.size - 1
         playStation(list[prevIndex], autoPlay = true)
+    }
+
+    /**
+     * Custom ForwardingPlayer that intercepts listeners to guarantee that Bluetooth AVRCP (Car Audio)
+     * and external MediaControllers receive immediate, cleanly formatted metadata updates whenever
+     * track info changes, without getting stuck on "Live".
+     */
+    private inner class CustomForwardingPlayer(player: Player) : ForwardingPlayer(player) {
+        private val sessionListeners = CopyOnWriteArraySet<Player.Listener>()
+        private val wrappedListeners = ConcurrentHashMap<Player.Listener, Player.Listener>()
+
+        override fun isCommandAvailable(command: @Player.Command Int): Boolean {
+            return when (command) {
+                Player.COMMAND_SEEK_TO_NEXT,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                Player.COMMAND_PLAY_PAUSE,
+                Player.COMMAND_STOP -> true
+                else -> super.isCommandAvailable(command)
+            }
+        }
+
+        override fun getAvailableCommands(): Player.Commands {
+            return super.getAvailableCommands().buildUpon()
+                .add(Player.COMMAND_SEEK_TO_NEXT)
+                .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+                .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                .build()
+        }
+
+        override fun seekToNext() {
+            playNextStation()
+        }
+
+        override fun seekToNextMediaItem() {
+            playNextStation()
+        }
+
+        override fun seekToPrevious() {
+            playPrevStation()
+        }
+
+        override fun seekToPreviousMediaItem() {
+            playPrevStation()
+        }
+
+        override fun addListener(listener: Player.Listener) {
+            sessionListeners.add(listener)
+            val wrapped = object : Player.Listener {
+                override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                    listener.onMediaMetadataChanged(buildSessionMetadata())
+                }
+
+                override fun onPlaylistMetadataChanged(mediaMetadata: MediaMetadata) {
+                    listener.onPlaylistMetadataChanged(buildSessionMetadata())
+                }
+
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    val updated = mediaItem?.buildUpon()?.setMediaMetadata(buildSessionMetadata())?.build()
+                    listener.onMediaItemTransition(updated, reason)
+                }
+
+                override fun onEvents(p: Player, events: Player.Events) = listener.onEvents(p, events)
+                override fun onTimelineChanged(t: androidx.media3.common.Timeline, r: Int) = listener.onTimelineChanged(t, r)
+                override fun onTracksChanged(t: androidx.media3.common.Tracks) = listener.onTracksChanged(t)
+                override fun onIsLoadingChanged(i: Boolean) = listener.onIsLoadingChanged(i)
+                override fun onAvailableCommandsChanged(c: Player.Commands) = listener.onAvailableCommandsChanged(c)
+                override fun onPlaybackStateChanged(s: Int) = listener.onPlaybackStateChanged(s)
+                override fun onPlayWhenReadyChanged(p: Boolean, r: Int) = listener.onPlayWhenReadyChanged(p, r)
+                override fun onPlaybackSuppressionReasonChanged(r: Int) = listener.onPlaybackSuppressionReasonChanged(r)
+                override fun onIsPlayingChanged(i: Boolean) = listener.onIsPlayingChanged(i)
+                override fun onRepeatModeChanged(r: Int) = listener.onRepeatModeChanged(r)
+                override fun onShuffleModeEnabledChanged(s: Boolean) = listener.onShuffleModeEnabledChanged(s)
+                override fun onPlayerError(e: PlaybackException) = listener.onPlayerError(e)
+                override fun onPositionDiscontinuity(o: Player.PositionInfo, n: Player.PositionInfo, r: Int) = listener.onPositionDiscontinuity(o, n, r)
+                override fun onPlaybackParametersChanged(p: androidx.media3.common.PlaybackParameters) = listener.onPlaybackParametersChanged(p)
+                override fun onSeekBackIncrementChanged(s: Long) = listener.onSeekBackIncrementChanged(s)
+                override fun onSeekForwardIncrementChanged(s: Long) = listener.onSeekForwardIncrementChanged(s)
+                override fun onMaxSeekToPreviousPositionChanged(m: Long) = listener.onMaxSeekToPreviousPositionChanged(m)
+                override fun onAudioSessionIdChanged(a: Int) = listener.onAudioSessionIdChanged(a)
+                override fun onAudioAttributesChanged(a: AudioAttributes) = listener.onAudioAttributesChanged(a)
+                override fun onVolumeChanged(v: Float) = listener.onVolumeChanged(v)
+                override fun onDeviceInfoChanged(d: androidx.media3.common.DeviceInfo) = listener.onDeviceInfoChanged(d)
+                override fun onDeviceVolumeChanged(v: Int, m: Boolean) = listener.onDeviceVolumeChanged(v, m)
+                override fun onVideoSizeChanged(v: androidx.media3.common.VideoSize) = listener.onVideoSizeChanged(v)
+                override fun onSurfaceSizeChanged(w: Int, h: Int) = listener.onSurfaceSizeChanged(w, h)
+                override fun onRenderedFirstFrame() = listener.onRenderedFirstFrame()
+                override fun onCues(c: androidx.media3.common.text.CueGroup) = listener.onCues(c)
+                override fun onMetadata(m: androidx.media3.common.Metadata) = listener.onMetadata(m)
+            }
+            wrappedListeners[listener] = wrapped
+            super.addListener(wrapped)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            sessionListeners.remove(listener)
+            val wrapped = wrappedListeners.remove(listener) ?: listener
+            super.removeListener(wrapped)
+        }
+
+        override fun getMediaMetadata(): MediaMetadata = buildSessionMetadata()
+
+        override fun getPlaylistMetadata(): MediaMetadata = buildSessionMetadata()
+
+        override fun getCurrentMediaItem(): MediaItem? {
+            return super.getCurrentMediaItem()?.buildUpon()
+                ?.setMediaMetadata(buildSessionMetadata())
+                ?.build()
+        }
+
+        fun dispatchMetadataChanged() {
+            val meta = buildSessionMetadata()
+            player.playlistMetadata = meta
+            for (listener in sessionListeners) {
+                try {
+                    listener.onMediaMetadataChanged(meta)
+                    listener.onPlaylistMetadataChanged(meta)
+                } catch (e: Exception) {
+                    Log.w("RadioPlayerService", "Error dispatching metadata: ${e.message}")
+                }
+            }
+        }
     }
 
     private inner class CustomMediaSessionCallback : MediaSession.Callback {
@@ -408,6 +646,8 @@ class RadioPlayerService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        rdsJob?.cancel()
+        serviceScope.cancel()
         mediaSession?.run {
             player.release()
             release()

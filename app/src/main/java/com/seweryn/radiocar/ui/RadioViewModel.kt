@@ -107,6 +107,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                     val st = repository.getStationById(mediaId)
                     _currentStation.value = st
                 }
+                mediaItem?.mediaMetadata?.let { updateMetadata(it) }
             }
         })
     }
@@ -138,13 +139,13 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         // If parsedSongTitle still contains " - " or " – ", separate artist and song title
         if (parsedSongTitle.contains(" - ")) {
             val parts = parsedSongTitle.split(" - ", limit = 2)
-            if (parsedArtist.isBlank() || parsedArtist.equals("Sewer Mobile Radio", ignoreCase = true)) {
+            if (parsedArtist.isBlank() || isDefaultArtistName(parsedArtist)) {
                 parsedArtist = parts[0].trim()
             }
             parsedSongTitle = parts[1].trim()
         } else if (parsedSongTitle.contains(" – ")) {
             val parts = parsedSongTitle.split(" – ", limit = 2)
-            if (parsedArtist.isBlank() || parsedArtist.equals("Sewer Mobile Radio", ignoreCase = true)) {
+            if (parsedArtist.isBlank() || isDefaultArtistName(parsedArtist)) {
                 parsedArtist = parts[0].trim()
             }
             parsedSongTitle = parts[1].trim()
@@ -162,7 +163,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
         // Filter out app name or station name from artistName
         if (parsedArtist.isBlank() ||
-            parsedArtist.equals("Sewer Mobile Radio", ignoreCase = true) ||
+            isDefaultArtistName(parsedArtist) ||
             parsedArtist.equals(album, ignoreCase = true) ||
             parsedArtist.equals("Radio Car", ignoreCase = true)
         ) {
@@ -170,6 +171,11 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             _artistName.value = parsedArtist
         }
+    }
+
+    private fun isDefaultArtistName(name: String): Boolean {
+        return name.equals("Sewer's Mobile Radio", ignoreCase = true) ||
+                name.equals("Sewer Mobile Radio", ignoreCase = true)
     }
 
     fun playStation(station: Station) {

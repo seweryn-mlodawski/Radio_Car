@@ -57,27 +57,40 @@ Pakiet aplikacji: `com.seweryn.radiocar`
   * `DefaultHttpDataSource.Factory` ma włączone `setAllowCrossProtocolRedirects(true)` oraz stały nagłówek `User-Agent: "RadioCar/1.0 (Linux; Android; ExoPlayer)"`.
 * **Bluetooth AVRCP & Wyświetlacz Samochodowy (BMW iDrive):**
   * **Odsłuch metadanych ICY w locie i serwis RDS Eurozet:**
-    * Wbudowane kanały ICY: `onMetadata` (`IcyInfo`) oraz `onMediaMetadataChanged` formatowane z czyszczeniem znaków BOM i prefiksów.
+    * Wbudowane kanały ICY: `onMetadata` (`IcyInfo`, `IcyHeaders`) oraz `onMediaMetadataChanged` formatowane z czyszczeniem znaków BOM i prefiksów.
     * Główne stacje Eurozet (np. Antyradio slot 1, Radio ZET slot 9) nie transmitują ICY w strumieniu internetowym – aplikacja pobiera dane o utworze na żywo w tle z endpointu `https://rds.eurozet.pl/reader/var/antyradio.json` (co 15 sekund, ~35 KB/godz.).
-    * 👤 **Wykonawca (ikona człowieczka w BMW):** `"Sewer's Mobile Radio"`
-    * 💿 **Płyta (ikona płyty w BMW):** Nazwa stacji (np. `"Antyradio Classic Rock"`)
-    * 🎵 **Utwór (ikona nutek w BMW):** Grany utwór (np. `"Breakout - Kiedy Bylem Malym Chlopcem"`) lub `"Live"` gdy brak piosenki.
-  * **Automatyczne odświeżanie po zmianie stacji (`CustomForwardingPlayer`):**
-    * Opakowanie `ExoPlayer` w `CustomForwardingPlayer` przechwytujący listenery MediaSession i rozsyłający `dispatchMetadataChanged()`.
-    * Zapobiega zacinaniu się wyświetlacza w aucie na napisie `"Live"` po przełączeniu stacji.
-  * **Sterowanie z kierownicy i radia samochodowego (Next/Prev Slot):**
-    * Deklaracja i obsługa `COMMAND_SEEK_TO_NEXT` i `COMMAND_SEEK_TO_PREVIOUS`.
-    * Obsługa `onMediaButtonEvent` dla kodów `KEYCODE_MEDIA_NEXT` i `KEYCODE_MEDIA_PREVIOUS`.
-  * **Rejestracja w Androidzie jako odtwarzacz muzyczny:**
-    * `android:appCategory="audio"` w `AndroidManifest.xml`.
-    * `intent-filter` dla `android.intent.category.APP_MUSIC` oraz `android.media.action.MEDIA_PLAY_FROM_SEARCH`.
-    * Odbiornik `MediaButtonReceiver`. Dzięki temu aplikacja pojawia się w procedurach Samsunga (*Tryby i procedury* / automatyzacje po połączeniu z autem).
-  * **Dynamiczny nagłówek urządzenia Bluetooth ([BluetoothDeviceTracker.kt](file:///g:/PROJEKTY_ANTY/Radio_Car/app/src/main/java/com/seweryn/radiocar/util/BluetoothDeviceTracker.kt)):**
-    * Automatyczne wykrywanie podłączonego urządzenia audio Bluetooth (A2DP / Handsfree / BLE).
-    * Inteligentne formatowanie nazw (np. `BMW - 6784 ghy` -> `BMW`, `JBL 678857` -> `JBL Audio`, `BMW X3` -> `BMW X3`).
-    * Gdy brak połączenia z urządzeniem audio: nagłówek wyświetla `"SEWER'S MOBILE RADIO"`.
-  * **Dopasowanie do pasków nawigacyjnych:**
-    * Wykorzystanie `WindowInsets` i `.navigationBarsPadding()` na ekranie głównym – kafelki slotów stacji nie wchodzą pod przyciski funkcyjne telefonu ani belkę gestów.
+    * 👤 **Wykonawca (ikona człowieka w BMW):**
+      * Gdy łączy się ze strumieniem: `"Connecting"`
+      * Gdy połączone i gra: `"Playing"` (dopóki brak wykonawcy), a po pobraniu nazwa wykonawcy (np. `"Breakout"`)
+      * Gdy zapauzowane / zatrzymane: `"Paused"` lub `"Stopped"`
+    * 💿 **Płyta (ikona płyty w BMW):**
+      * W czasie łączenia: nazwa stacji ze slotu (np. `"Antyradio"`, `"Radio ZET"`)
+      * Po połączeniu: nazwa stacji pobrana ze strumienia ICY/RDS (np. `"ANTYRADIO"`), lub fallback do slotu
+    * 🎵 **Utwór (ikona nutek w BMW):**
+      * W czasie łączenia / dopóki brak utworu: nazwa stacji
+      * Po pobraniu utworu: tytuł utworu (np. `"Kiedy Bylem Malym Chlopcem"`)
+* **Karta Odtwarzacza w Panelu Powiadomień Androida (Media Notification / Notification Shade):**
+  * Integracja z `androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(mediaSession)`.
+  * Po ściągnięciu belki z góry ekranu telefonu wyświetla się pełnoprawna karta systemowa ze sterowaniem:
+    * Przyciski: Poprzednia stacja (`⏮`), Odtwarzaj / Pauza (`▶` / `⏸`), Następna stacja (`⏭`).
+    * Okładka / logo stacji lub albumu ładowane asynchronicznie przez Coil.
+    * Kliknięcie w kartę przywraca aplikację na pierwszy plan.
+* **Automatyczne odświeżanie po zmianie stacji (`CustomForwardingPlayer`):**
+  * Opakowanie `ExoPlayer` w `CustomForwardingPlayer` przechwytujący listenery MediaSession i rozsyłający `dispatchMetadataChanged()`.
+  * Zapobiega zacinaniu się wyświetlacza w aucie po przełączeniu stacji.
+* **Sterowanie z kierownicy i radia samochodowego (Next/Prev Slot):**
+  * Deklaracja i obsługa `COMMAND_SEEK_TO_NEXT` i `COMMAND_SEEK_TO_PREVIOUS`.
+  * Obsługa `onMediaButtonEvent` dla kodów `KEYCODE_MEDIA_NEXT` i `KEYCODE_MEDIA_PREVIOUS`.
+* **Rejestracja w Androidzie jako odtwarzacz muzyczny:**
+  * `android:appCategory="audio"` w `AndroidManifest.xml`.
+  * `intent-filter` dla `android.intent.category.APP_MUSIC` oraz `android.media.action.MEDIA_PLAY_FROM_SEARCH`.
+  * Odbiornik `MediaButtonReceiver`. Dzięki temu aplikacja pojawia się w procedurach Samsunga (*Tryby i procedury* / automatyzacje po połączeniu z autem).
+* **Dynamiczny nagłówek urządzenia Bluetooth ([BluetoothDeviceTracker.kt](file:///g:/PROJEKTY_ANTY/Radio_Car/app/src/main/java/com/seweryn/radiocar/util/BluetoothDeviceTracker.kt)):**
+  * Automatyczne wykrywanie podłączonego urządzenia audio Bluetooth (A2DP / Handsfree / BLE).
+  * Inteligentne formatowanie nazw (np. `BMW - 6784 ghy` -> `BMW`, `JBL 678857` -> `JBL Audio`, `BMW X3` -> `BMW X3`).
+  * Gdy brak połączenia z urządzeniem audio: nagłówek wyświetla `"SEWER'S MOBILE RADIO"`.
+* **Dopasowanie do pasków nawigacyjnych:**
+  * Wykorzystanie `WindowInsets` i `.navigationBarsPadding()` na ekranie głównym – kafelki slotów stacji nie wchodzą pod przyciski funkcyjne telefonu ani belkę gestów.
 
 ---
 

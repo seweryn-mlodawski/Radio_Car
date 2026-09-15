@@ -55,14 +55,17 @@ class StationRepository(context: Context) {
     private fun migrateStationUrl(station: Station): Station {
         val url = station.streamUrl
         if (url.contains("cdn.eurozet.pl")) {
-            val updatedUrl = url
-                .replace("an01.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an03.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an04.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an05.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an06.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("?redirected=01", "")
+            var updatedUrl = url
+                .replace("an01.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an02.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an03.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an04.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an05.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an06.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("https://an.cdn.eurozet.pl", "http://an.cdn.eurozet.pl")
+            if (updatedUrl.contains("?redirected=")) {
+                updatedUrl = updatedUrl.substringBefore("?redirected=")
+            }
             if (updatedUrl != url) {
                 return station.copy(streamUrl = updatedUrl)
             }
@@ -171,28 +174,28 @@ class StationRepository(context: Context) {
             Station(
                 id = 1,
                 name = "Antyradio",
-                streamUrl = "https://an02.cdn.eurozet.pl/ant-web.mp3",
+                streamUrl = "http://an.cdn.eurozet.pl/ant-web.mp3",
                 logoUrl = "https://gfx.antyradio.pl/design/antyradio/src/images/favicon/favicon_180x180.png",
                 icon = "📻"
             ),
             Station(
                 id = 2,
                 name = "Antyradio Classic Rock",
-                streamUrl = "https://an02.cdn.eurozet.pl/ANTCLA.mp3",
+                streamUrl = "http://an.cdn.eurozet.pl/ANTCLA.mp3",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/apple-touch-icon.png",
                 icon = "🎸"
             ),
             Station(
                 id = 3,
                 name = "Antyradio Greatest",
-                streamUrl = "https://an02.cdn.eurozet.pl/ANTGRE.mp3",
+                streamUrl = "http://an.cdn.eurozet.pl/ANTGRE.mp3",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/favicon-32x32.png",
                 icon = "⚡"
             ),
             Station(
                 id = 4,
                 name = "Antyradio Unplugged",
-                streamUrl = "https://an02.cdn.eurozet.pl/ANTUNP.mp3",
+                streamUrl = "http://an.cdn.eurozet.pl/ANTUNP.mp3",
                 logoUrl = "https://gfx-player.antyradio.pl/design/player_antyradio/images/favicon/apple-touch-icon.png",
                 icon = "📻"
             ),
@@ -227,7 +230,7 @@ class StationRepository(context: Context) {
             Station(
                 id = 9,
                 name = "Radio ZET",
-                streamUrl = "https://an02.cdn.eurozet.pl/zet-net.mp3",
+                streamUrl = "http://an.cdn.eurozet.pl/zet-net.mp3",
                 logoUrl = "https://www.radiozet.pl/favicon.ico",
                 icon = "🔴"
             ),

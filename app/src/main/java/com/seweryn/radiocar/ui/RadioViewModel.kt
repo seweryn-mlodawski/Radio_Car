@@ -152,9 +152,11 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Filter out "Live" or station name from songTitle
+        val currentStName = _currentStation.value?.name
         if (parsedSongTitle.isBlank() ||
             parsedSongTitle.equals("Live", ignoreCase = true) ||
-            parsedSongTitle.equals(album, ignoreCase = true)
+            parsedSongTitle.equals(album, ignoreCase = true) ||
+            (!currentStName.isNullOrBlank() && parsedSongTitle.equals(currentStName, ignoreCase = true))
         ) {
             _songTitle.value = ""
         } else {
@@ -165,6 +167,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         if (parsedArtist.isBlank() ||
             isDefaultArtistName(parsedArtist) ||
             parsedArtist.equals(album, ignoreCase = true) ||
+            (!currentStName.isNullOrBlank() && parsedArtist.equals(currentStName, ignoreCase = true)) ||
             parsedArtist.equals("Radio Car", ignoreCase = true)
         ) {
             _artistName.value = ""
@@ -175,7 +178,11 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun isDefaultArtistName(name: String): Boolean {
         return name.equals("Sewer's Mobile Radio", ignoreCase = true) ||
-                name.equals("Sewer Mobile Radio", ignoreCase = true)
+                name.equals("Sewer Mobile Radio", ignoreCase = true) ||
+                name.equals("Connecting", ignoreCase = true) ||
+                name.equals("Playing", ignoreCase = true) ||
+                name.equals("Paused", ignoreCase = true) ||
+                name.equals("Stopped", ignoreCase = true)
     }
 
     fun playStation(station: Station) {

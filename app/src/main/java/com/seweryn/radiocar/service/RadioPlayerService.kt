@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import android.view.KeyEvent
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -22,9 +24,13 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.metadata.icy.IcyHeaders
 import androidx.media3.extractor.metadata.icy.IcyInfo
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaStyleNotificationHelper
+import coil.ImageLoader
+import coil.request.ImageRequest
 import com.seweryn.radiocar.MainActivity
 import com.seweryn.radiocar.data.model.Station
 import com.seweryn.radiocar.data.repository.StationRepository
@@ -55,6 +61,10 @@ class RadioPlayerService : MediaSessionService() {
     private var currentSongTitle: String = ""
     private var currentArtist: String = ""
     private var currentArtworkUrl: String? = null
+    private var isConnecting: Boolean = false
+    private var streamStationName: String? = null
+    private var lastLoadedArtUrl: String? = null
+    private var cachedArtBitmap: Bitmap? = null
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var rdsJob: Job? = null
@@ -96,6 +106,13 @@ class RadioPlayerService : MediaSessionService() {
                     val entry = metadata.get(i)
                     if (entry is IcyInfo) {
                         handleIcyRawTitle(entry.title)
+                    } else if (entry is IcyHeaders) {
+                        val icyName = entry.name?.trim()
+                        if (!icyName.isNullOrBlank() && icyName != streamStationName) {
+                            streamStationName = icyName
+                            forwardingPlayer.dispatchMetadataChanged()
+                            updateNotification()
+                        }
                     }
                 }
             }
@@ -105,15 +122,47 @@ class RadioPlayerService : MediaSessionService() {
                 if (!icyTitle.isNullOrBlank()) {
                     handleIcyRawTitle(icyTitle)
                 }
+                val stationFromMeta = mediaMetadata.station?.toString()?.trim()
+                if (!stationFromMeta.isNullOrBlank() && stationFromMeta != streamStationName) {
+                    streamStationName = stationFromMeta
+                    forwardingPlayer.dispatchMetadataChanged()
+                    updateNotification()
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> isConnecting = true
+                    Player.STATE_READY -> isConnecting = false
+                    Player.STATE_ENDED, Player.STATE_IDLE -> isConnecting = false
+                }
+                forwardingPlayer.dispatchMetadataChanged()
+                updateNotification()
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    isConnecting = false
+                }
+                forwardingPlayer.dispatchMetadataChanged()
+                updateNotification()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                forwardingPlayer.dispatchMetadataChanged()
+                updateNotification()
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("RadioPlayerService", "Player error for station ${currentStation?.name}: ${error.message} (code: ${error.errorCode})", error)
+                isConnecting = false
+                forwardingPlayer.dispatchMetadataChanged()
+                updateNotification()
             }
         })
 
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, openAppIntent,
@@ -138,44 +187,133 @@ class RadioPlayerService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureForeground(currentStation?.name ?: "Sewer's Mobile Radio")
         val action = intent?.action
-        if (action == ACTION_PLAY_STATION) {
-            val stationId = intent.getIntExtra(EXTRA_STATION_ID, -1)
-            val stationName = intent.getStringExtra(EXTRA_STATION_NAME) ?: "Sewer's Mobile Radio"
-            val stationUrl = intent.getStringExtra(EXTRA_STATION_URL)
-            val stationLogo = intent.getStringExtra(EXTRA_STATION_LOGO)
+        when (action) {
+            ACTION_PLAY_STATION -> {
+                val stationId = intent.getIntExtra(EXTRA_STATION_ID, -1)
+                val stationName = intent.getStringExtra(EXTRA_STATION_NAME) ?: "Sewer's Mobile Radio"
+                val stationUrl = intent.getStringExtra(EXTRA_STATION_URL)
+                val stationLogo = intent.getStringExtra(EXTRA_STATION_LOGO)
 
-            if (!stationUrl.isNullOrBlank()) {
-                val station = Station(
-                    id = if (stationId != -1) stationId else 1,
-                    name = stationName,
-                    streamUrl = stationUrl,
-                    logoUrl = stationLogo ?: "",
-                    icon = "📻"
-                )
-                playStation(station, autoPlay = true)
-            } else if (stationId != -1) {
-                repository.getStationById(stationId)?.let {
-                    playStation(it, autoPlay = true)
+                if (!stationUrl.isNullOrBlank()) {
+                    val station = Station(
+                        id = if (stationId != -1) stationId else 1,
+                        name = stationName,
+                        streamUrl = stationUrl,
+                        logoUrl = stationLogo ?: "",
+                        icon = "📻"
+                    )
+                    playStation(station, autoPlay = true)
+                } else if (stationId != -1) {
+                    repository.getStationById(stationId)?.let {
+                        playStation(it, autoPlay = true)
+                    }
                 }
             }
-        } else if (action == ACTION_RELOAD_STREAM) {
-            reloadCurrentStream()
+            ACTION_RELOAD_STREAM -> {
+                reloadCurrentStream()
+            }
+            ACTION_TOGGLE_PLAY -> {
+                if (player.isPlaying) {
+                    player.pause()
+                } else {
+                    player.play()
+                }
+                updateNotification()
+            }
+            ACTION_PREV -> {
+                playPrevStation()
+            }
+            ACTION_NEXT -> {
+                playNextStation()
+            }
+            else -> {
+                ensureForeground(currentStation?.name ?: "Sewer's Mobile Radio")
+            }
         }
         return super.onStartCommand(intent, flags, startId)
     }
 
     private fun ensureForeground(stationName: String) {
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(stationName.ifBlank { "Sewer's Mobile Radio" })
-                .setContentText("Odtwarzanie stacji...")
-                .setSmallIcon(android.R.drawable.ic_media_play)
-                .setOngoing(true)
-                .setSilent(true)
-                .build()
+        updateNotification()
+    }
 
+    private fun updateNotification() {
+        val station = currentStation ?: repository.getStationById(repository.getLastStationId()) ?: repository.stations.value.firstOrNull { !it.isEmpty }
+        val stationName = station?.name ?: "Sewer's Mobile Radio"
+        val isPlaying = player.isPlaying
+        val isBuffering = player.playbackState == Player.STATE_BUFFERING || isConnecting
+
+        val title = if (currentSongTitle.isNotBlank()) {
+            currentSongTitle
+        } else {
+            streamStationName ?: stationName
+        }
+
+        val text = when {
+            currentArtist.isNotBlank() -> "${currentArtist} • $stationName"
+            isBuffering -> "Łączenie... • $stationName"
+            isPlaying -> "Odtwarzanie na żywo • $stationName"
+            else -> "Wstrzymano • $stationName"
+        }
+
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            this, 0, openAppIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val prevIntent = Intent(this, RadioPlayerService::class.java).apply { action = ACTION_PREV }
+        val prevPendingIntent = PendingIntent.getService(
+            this, 1, prevIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val playPauseIntent = Intent(this, RadioPlayerService::class.java).apply { action = ACTION_TOGGLE_PLAY }
+        val playPausePendingIntent = PendingIntent.getService(
+            this, 2, playPauseIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val nextIntent = Intent(this, RadioPlayerService::class.java).apply { action = ACTION_NEXT }
+        val nextPendingIntent = PendingIntent.getService(
+            this, 3, nextIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSubText(stationName)
+            .setContentIntent(contentPendingIntent)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setSilent(true)
+            .setOngoing(isPlaying)
+            .addAction(android.R.drawable.ic_media_previous, "Poprzednia", prevPendingIntent)
+            .addAction(
+                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (isPlaying) "Pauza" else "Odtwarzaj",
+                playPausePendingIntent
+            )
+            .addAction(android.R.drawable.ic_media_next, "Następna", nextPendingIntent)
+
+        mediaSession?.let { session ->
+            builder.setStyle(
+                MediaStyleNotificationHelper.MediaStyle(session)
+                    .setShowActionsInCompactView(0, 1, 2)
+            )
+        }
+
+        cachedArtBitmap?.let {
+            builder.setLargeIcon(it)
+        }
+
+        val notification = builder.build()
+
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
@@ -188,6 +326,30 @@ class RadioPlayerService : MediaSessionService() {
         } catch (e: Exception) {
             Log.e("RadioPlayerService", "Failed to startForeground: ${e.message}", e)
         }
+
+        val artUrl = currentArtworkUrl ?: station?.logoUrl
+        if (!artUrl.isNullOrBlank() && artUrl != lastLoadedArtUrl) {
+            loadNotificationBitmap(artUrl, builder)
+        }
+    }
+
+    private fun loadNotificationBitmap(url: String, builder: NotificationCompat.Builder) {
+        val imageLoader = ImageLoader(this)
+        val request = ImageRequest.Builder(this)
+            .data(url)
+            .allowHardware(false)
+            .target { drawable ->
+                val bitmap = (drawable as? BitmapDrawable)?.bitmap
+                if (bitmap != null) {
+                    lastLoadedArtUrl = url
+                    cachedArtBitmap = bitmap
+                    builder.setLargeIcon(bitmap)
+                    val manager = getSystemService(NotificationManager::class.java)
+                    manager?.notify(NOTIFICATION_ID, builder.build())
+                }
+            }
+            .build()
+        imageLoader.enqueue(request)
     }
 
     fun playStation(station: Station, autoPlay: Boolean = true) {
@@ -196,6 +358,8 @@ class RadioPlayerService : MediaSessionService() {
         currentSongTitle = ""
         currentArtist = ""
         currentArtworkUrl = null
+        streamStationName = null
+        isConnecting = true
         repository.saveLastStationId(station.id)
 
         // Cancel previous RDS polling job if any
@@ -214,6 +378,7 @@ class RadioPlayerService : MediaSessionService() {
             player.setMediaItem(mediaItem)
             player.playlistMetadata = initialMetadata
             forwardingPlayer.dispatchMetadataChanged()
+            updateNotification()
             player.prepare()
             if (autoPlay) {
                 player.play()
@@ -240,20 +405,43 @@ class RadioPlayerService : MediaSessionService() {
 
     /**
      * Builds standard MediaMetadata formatted for Car displays (BMW iDrive AVRCP) and the phone UI.
-     * - Artist (👤 Wykonawca): "Sewer's Mobile Radio"
-     * - AlbumTitle (💿 Płyta): Station name (e.g. "Antyradio Classic Rock")
-     * - Title (🎵 Utwór): Song title or "Live"
+     * - Wykonawca (👤 Ikona człowieka w BMW):
+     *     * Gdy nie gra (zapauzowane / stopped): "Paused" / "Stopped"
+     *     * Gdy łączy się ze strumieniem: "Connecting"
+     *     * Gdy połączone i gra: "Playing" dopóki nie ma wykonawcy, a potem nazwa wykonawcy
+     * - Album (💿 Ikona płyty w BMW):
+     *     * Podczas łączenia: nazwa stacji zapisana na slocie
+     *     * Po połączeniu: nazwa stacji pobrana ze strumienia (ICY/RDS) lub ze slotu
+     * - Utwór (🎵 Ikona nutki w BMW):
+     *     * Podczas łączenia / brak utworu: Nazwa stacji
+     *     * Po pobraniu utworu: Tytuł utworu
      */
     private fun buildSessionMetadata(): MediaMetadata {
         val station = currentStation
-        val stationName = station?.name ?: "Sewer's Mobile Radio"
+        val slotStationName = station?.name ?: "Sewer's Mobile Radio"
         val song = currentSongTitle.trim()
         val artist = currentArtist.trim()
 
-        val titleForCar = when {
-            song.isNotBlank() && artist.isNotBlank() -> "$artist - $song"
-            song.isNotBlank() -> song
-            else -> "Live"
+        val artistForCar = when {
+            isConnecting -> "Connecting"
+            player.isPlaying -> {
+                if (artist.isNotBlank()) artist else "Playing"
+            }
+            player.playbackState == Player.STATE_READY && !player.playWhenReady -> "Paused"
+            player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED -> "Stopped"
+            else -> if (artist.isNotBlank()) artist else "Paused"
+        }
+
+        val albumForCar = if (isConnecting) {
+            slotStationName
+        } else {
+            streamStationName?.ifBlank { slotStationName } ?: slotStationName
+        }
+
+        val titleForCar = if (song.isNotBlank()) {
+            song
+        } else {
+            slotStationName
         }
 
         val artworkUri = when {
@@ -263,11 +451,11 @@ class RadioPlayerService : MediaSessionService() {
         }
 
         return MediaMetadata.Builder()
-            .setArtist("Sewer's Mobile Radio") // 👤 Ikona człowieczka w BMW
-            .setAlbumTitle(stationName)        // 💿 Ikona płyty w BMW
-            .setTitle(titleForCar)             // 🎵 Ikona nutek w BMW
-            .setDisplayTitle(if (song.isNotBlank()) song else stationName)
-            .setSubtitle(if (artist.isNotBlank()) artist else "Live")
+            .setArtist(artistForCar)
+            .setAlbumTitle(albumForCar)
+            .setTitle(titleForCar)
+            .setDisplayTitle(if (song.isNotBlank()) song else albumForCar)
+            .setSubtitle(if (artist.isNotBlank()) artist else artistForCar)
             .setArtworkUri(artworkUri)
             .build()
     }
@@ -306,18 +494,23 @@ class RadioPlayerService : MediaSessionService() {
         }
 
         forwardingPlayer.dispatchMetadataChanged()
+        updateNotification()
     }
 
     private fun resolveStreamUrl(rawUrl: String): String {
         if (rawUrl.contains("cdn.eurozet.pl")) {
-            return rawUrl
-                .replace("an01.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an03.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an04.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an05.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an06.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("an.cdn.eurozet.pl", "an02.cdn.eurozet.pl")
-                .replace("?redirected=01", "")
+            var updated = rawUrl
+                .replace("an01.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an02.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an03.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an04.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an05.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("an06.cdn.eurozet.pl", "an.cdn.eurozet.pl")
+                .replace("https://an.cdn.eurozet.pl", "http://an.cdn.eurozet.pl")
+            if (updated.contains("?redirected=")) {
+                updated = updated.substringBefore("?redirected=")
+            }
+            return updated
         }
         return rawUrl
     }
@@ -411,6 +604,7 @@ class RadioPlayerService : MediaSessionService() {
                 currentArtist = ""
                 currentArtworkUrl = null
                 forwardingPlayer.dispatchMetadataChanged()
+                updateNotification()
             }
             return
         }
@@ -426,6 +620,7 @@ class RadioPlayerService : MediaSessionService() {
         }
 
         forwardingPlayer.dispatchMetadataChanged()
+        updateNotification()
     }
 
     private fun playNextStation() {
@@ -669,5 +864,6 @@ class RadioPlayerService : MediaSessionService() {
         const val ACTION_NEXT = "com.seweryn.radiocar.ACTION_NEXT"
         const val ACTION_PREV = "com.seweryn.radiocar.ACTION_PREV"
         const val ACTION_RELOAD = "com.seweryn.radiocar.ACTION_RELOAD"
+        const val ACTION_TOGGLE_PLAY = "com.seweryn.radiocar.ACTION_TOGGLE_PLAY"
     }
 }
